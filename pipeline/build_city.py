@@ -127,6 +127,51 @@ def dedupe(projects):
     return kept
 
 
+def compact(name):
+    """Name tokens joined without spaces, so 'Kristal Sun Stone' and 'Kristal Sunstone' compare equal."""
+    return "".join(t for t in re.findall(r"[a-z0-9]+", (name or "").lower()) if t not in GENERIC)
+
+
+def attach_nobroker(projects, listings, max_m=1500):
+    """Add NoBroker flat listings to the Magicbricks project with the same society name nearby.
+
+    Only flats in a named society are attached; independent houses, leases (a lump sum, not a monthly rent),
+    RKs and "4+ BHK" (a lower bound) are counted but never enter a median. A listing whose society name matches
+    no project is left unmatched rather than given to whatever is closest."""
+    grid = Grid(projects, lambda p: (p["lng"], p["lat"]))
+    stats = defaultdict(int)
+    for l in listings:
+        if l["deal"] not in ("rent", "sale") or not l.get("society") or l.get("kind") not in ("flat", "apartment") \
+                or not l.get("bhk") or l.get("bhk_plus") or not l.get("lat") or not l.get("lng"):
+            stats["not_a_society_flat"] += 1
+            continue
+        here, want = (l["lng"], l["lat"]), compact(l["society"])
+        best, best_d = None, max_m
+        for p in grid.near(here, r=2):
+            have = compact(p["name"])
+            if not have or not want or not (have == want or (len(have) >= 6 and have in want) or (len(want) >= 6 and want in have)):
+                continue
+            d = geo.dist_m(here, (p["lng"], p["lat"]))
+            if d < best_d:
+                best, best_d = p, d
+        if not best:
+            stats["unmatched"] += 1
+            continue
+        key = "rent_listings" if l["deal"] == "rent" else "sale_listings"
+        row = {"bhk": l["bhk"], "price": l["price"], "sqft": l.get("sqft"), "psf": l.get("psf"), "furnished": None, "floor": None,
+               "posted": l.get("posted"), "source": "nobroker", "url": l["url"]}
+        if any(x.get("bhk") == row["bhk"] and x.get("price") == row["price"] and x.get("sqft") == row["sqft"] for x in best.get(key) or []):
+            stats["duplicate"] += 1  # same home already listed on Magicbricks
+            continue
+        best.setdefault(key, []).append(row)
+        nb = best.setdefault("nb", {"rent": 0, "sale": 0, "links": []})
+        nb[l["deal"]] += 1
+        if len(nb["links"]) < 8:
+            nb["links"].append({"deal": l["deal"], "bhk": l["bhk"], "price": l["price"], "url": l["url"]})
+        stats[f"attached_{l['deal']}"] += 1
+    return dict(stats)
+
+
 def portal_units(p):
     units = []
     for u in (p.get("configs") or {}).get("units", []) or p.get("card_units") or []:
@@ -230,7 +275,11 @@ def main(city="gurgaon"):
     located = [p for p in raw if p.get("lat") and p.get("lng") and s0 < p["lat"] < n0 and w0 < p["lng"] < e0]
     not_located = len(raw) - len(located)
     projects = dedupe(located)
-    areas = json.loads((out / "osm_areas.geojson").read_text())["features"]
+    nb_file = out / "nb_listings.json"
+    nb_stats = attach_nobroker(projects, json.loads(nb_file.read_text(encoding="utf-8"))) if nb_file.exists() else {}
+    if nb_stats:
+        print("NoBroker listings:", nb_stats)
+    areas =json.loads((out / "osm_areas.geojson").read_text())["features"]
     area_grid = Grid(areas, lambda a: geo.centroid(a["geometry"]["coordinates"][0]))
     blds = json.loads((out / "osm_buildings.geojson").read_text())["features"]
     for b in blds:
@@ -255,7 +304,7 @@ def main(city="gurgaon"):
              "sale_count": p.get("sale_count"), "rent_count": p.get("rent_count"), "psf_now": p.get("psf_now"),
              "trend": p.get("trend") or [], "description": p.get("description"),
              "gmaps": "https://www.google.com/maps/search/?api=1&query=" + urllib.parse.quote(f"{p['name']}, {p.get('locality') or ''}, {cfg['name']}"),
-             "prices": pricing.listing_stats(p)}
+             "prices": pricing.listing_stats(p), "nb": p.get("nb")}
         if s["towers"] and s["towers"] > 60:  # portal typo (e.g. 1500 towers): not plausible, drop it
             s["towers"] = None
         p["_s"] = s
@@ -442,8 +491,10 @@ def main(city="gurgaon"):
             "counts": {"listed": len(raw), "on_map": len(societies), "not_located": not_located,
                        "ai_read": sum(1 for s in societies if s.get("ai_read")),
                        "for_sale": sum(s["sale_count"] or 0 for s in societies), "for_rent": sum(s["rent_count"] or 0 for s in societies),
-                       "verified": sum(s["verified"] for s in societies)},
-            "sources": ["Magicbricks project pages", "OpenStreetMap contributors", "HRERA Gurugram", "Builder brochures (verified rows)"],
+                       "verified": sum(s["verified"] for s in societies),
+                       "nb_sale": nb_stats.get("attached_sale", 0), "nb_rent": nb_stats.get("attached_rent", 0),
+                       "nb_unmatched": nb_stats.get("unmatched", 0)},
+            "sources": ["Magicbricks project pages"] + (["NoBroker public search pages"] if nb_stats else []) + [ "OpenStreetMap contributors", "HRERA Gurugram", "Builder brochures (verified rows)"],
             "societies": societies, "events": events}
     details = {}
     for s in societies:  # heavy per-society text, loaded only when a card opens
@@ -468,7 +519,7 @@ def main(city="gurgaon"):
 def write_csv(soc_path, unit_path, societies):
     """Flat exports: one row per society, and one row per unit type with bedroom sizes."""
     cols = ["id", "name", "developer", "locality", "type", "lat", "lng", "status", "possession", "rera_id", "towers", "units", "acres",
-            "listings_for_sale", "listings_for_rent", "price_range_min", "price_range_max", "price_per_sqft"]
+            "listings_for_sale", "listings_for_rent", "nobroker_for_sale", "nobroker_for_rent", "price_range_min", "price_range_max", "price_per_sqft"]
     for b in range(1, 6):
         cols += [f"buy_{b}bhk_median", f"buy_{b}bhk_estimate", f"rent_{b}bhk_median", f"rent_{b}bhk_estimate", f"{b}bhk_price_flag"]
     cols += ["rating", "rating_count", "review_count", "amenities", "verified", "smallest_bedroom_ft", "magicbricks_url", "google_maps_url"]
@@ -479,7 +530,8 @@ def write_csv(soc_path, unit_path, societies):
             rooms = [r for u in s["unit_types"] for r in (u.get("bedrooms") or [])]
             smallest = min(rooms, key=lambda r: r[0]) if rooms else None
             row = [s["id"], s["name"], s["developer"], s["locality"], s["kind"], s["lat"], s["lng"], s["status"], s["possession"], s["rera_id"],
-                   s["towers"], s["units"], s["acres"], s["sale_count"], s["rent_count"], s["price_min"], s["price_max"], s["psf_now"]]
+                   s["towers"], s["units"], s["acres"], s["sale_count"], s["rent_count"],
+                   (s.get("nb") or {}).get("sale"), (s.get("nb") or {}).get("rent"), s["price_min"], s["price_max"], s["psf_now"]]
             for b in range(1, 6):
                 p = s["prices"].get(str(b), {})
                 row += [(p.get("buy") or {}).get("median"), (p.get("buy_est") or {}).get("value"),

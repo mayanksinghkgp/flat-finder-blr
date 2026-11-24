@@ -65,3 +65,23 @@ def test_match_verified_needs_whole_name_and_sector():
     assert build_city.match_verified({"match": ["M3M Heights"], "sector": "65"}, ps)["mb_id"] == 2
     assert build_city.match_verified({"match": ["M3M St Andrews"], "sector": "65"}, ps)["mb_id"] == 4
     assert build_city.match_verified({"match": ["M3M Heights"], "sector": "65"}, ps, taken={2}) is None
+
+
+def test_attach_nobroker_by_name_only():
+    sobha = {"name": "Sobha Infinia", "lng": 77.6249, "lat": 12.9249, "rent_listings": [{"bhk": 3, "price": 90000, "sqft": None}]}
+    kristal = {"name": "Kristal Sunstone", "lng": 77.6345, "lat": 12.9380}
+    base = {"kind": "flat", "bhk_plus": False, "sqft": None, "psf": None, "url": "u"}
+    ls = [
+        {**base, "deal": "rent", "bhk": 3, "price": 95000, "society": "Sobha Infinia", "lng": 77.6252, "lat": 12.9251},
+        {**base, "deal": "rent", "bhk": 3, "price": 90000, "society": "Sobha Infinia", "lng": 77.6252, "lat": 12.9251},  # already on Magicbricks
+        {**base, "deal": "sale", "bhk": 2, "price": 1.4e7, "society": "Kristal Sun Stone", "lng": 77.6346, "lat": 12.9381},
+        {**base, "deal": "rent", "bhk": 2, "price": 30000, "society": "Some Other Residency", "lng": 77.6250, "lat": 12.9250},  # close, wrong name
+        {**base, "deal": "rent", "bhk": 2, "price": 30000, "society": None, "kind": "house", "lng": 77.6250, "lat": 12.9250},
+        {**base, "deal": "lease", "bhk": 2, "price": 900000, "society": "Sobha Infinia", "lng": 77.6250, "lat": 12.9250},
+        {**base, "deal": "sale", "bhk": 4, "bhk_plus": True, "price": 6e7, "society": "Sobha Infinia", "lng": 77.6250, "lat": 12.9250},
+        {**base, "deal": "rent", "bhk": 3, "price": 80000, "society": "Sobha Infinia", "lng": 77.70, "lat": 12.99},  # same name, ~10 km away
+    ]
+    stats = build_city.attach_nobroker([sobha, kristal], ls)
+    assert stats == {"attached_rent": 1, "duplicate": 1, "attached_sale": 1, "unmatched": 2, "not_a_society_flat": 3}
+    assert [l["price"] for l in sobha["rent_listings"]] == [90000, 95000] and sobha["rent_listings"][1]["source"] == "nobroker"
+    assert kristal["nb"] == {"rent": 0, "sale": 1, "links": [{"deal": "sale", "bhk": 2, "price": 1.4e7, "url": "u"}]}

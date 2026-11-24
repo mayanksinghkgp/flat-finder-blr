@@ -53,8 +53,9 @@ async function boot() {
 
   myList = params.get('list') ? params.get('list').split(',').filter((id) => byId.has(id)) : store.get(`ff-list-${cityId}`, []).filter((id) => byId.has(id));
   const c = city.counts, m = city.price_model || {}, rated = city.societies.filter((s) => s.rating).length;
-  $('note').textContent = `${c.on_map.toLocaleString()} societies · ${(c.for_sale || 0).toLocaleString()} homes for sale, ${(c.for_rent || 0).toLocaleString()} for rent on Magicbricks · ${c.verified} verified from brochures and HRERA plans`;
-  $('about-prices').innerHTML = `Prices and rents are medians of live Magicbricks listings. <b>⚠</b> marks a listing price our checks think is a typo (far from the same home nearby, or rent and price that cannot both be right): it is shown as listed but not used for filters. <b>~</b> marks our estimate: rent is about ${((m.city_yield || 0.025) * 100).toFixed(1)}% of the price per year here (measured on ${m.pairs || 0} society and BHK pairs, correlation ${m.log_price_rent_correlation ?? 'n/a'}). "Probably fits" uses a cautious bedroom size estimated from unit size (${city.room_model?.n || 0} verified unit types). Resident ratings exist for ${rated.toLocaleString()} societies.`;
+  const nbNote = (c.nb_sale || c.nb_rent) ? ` · ${(c.nb_sale || 0).toLocaleString()} for sale, ${(c.nb_rent || 0).toLocaleString()} for rent on NoBroker` : '';
+  $('note').textContent = `${c.on_map.toLocaleString()} societies · ${(c.for_sale || 0).toLocaleString()} homes for sale, ${(c.for_rent || 0).toLocaleString()} for rent on Magicbricks${nbNote} · ${c.verified} verified from brochures and HRERA plans`;
+  $('about-prices').innerHTML = `Prices and rents are medians of live Magicbricks listings${(c.nb_sale || c.nb_rent) ? ' and NoBroker listings in the same society (matched by society name; independent houses and leases are left out)' : ''}. <b>⚠</b> marks a listing price our checks think is a typo (far from the same home nearby, or rent and price that cannot both be right): it is shown as listed but not used for filters. <b>~</b> marks our estimate: rent is about ${((m.city_yield || 0.025) * 100).toFixed(1)}% of the price per year here (measured on ${m.pairs || 0} society and BHK pairs, correlation ${m.log_price_rent_correlation ?? 'n/a'}). "Probably fits" uses a cautious bedroom size estimated from unit size (${city.room_model?.n || 0} verified unit types). Resident ratings exist for ${rated.toLocaleString()} societies.`;
   $('dl-all').href = `/data/${cityId}-societies.csv`;
   $('dl-units').href = `/data/${cityId}-units.csv`;
   $('dl-results').onclick = exportResults;
@@ -279,7 +280,7 @@ function sorted(list) {
     score: (a, b) => (b.score || 0) - (a.score || 0),
     rating: (a, b) => (b.rating || 0) - (a.rating || 0) || (b.rating_count || 0) - (a.rating_count || 0),
     price: (a, b) => price(a) - price(b),
-    listings: (a, b) => ((b.sale_count || 0) + (b.rent_count || 0)) - ((a.sale_count || 0) + (a.rent_count || 0)),
+    listings: (a, b) => ((b.sale_count || 0) + (b.rent_count || 0) + (b.nb?.sale || 0) + (b.nb?.rent || 0)) - ((a.sale_count || 0) + (a.rent_count || 0) + (a.nb?.sale || 0) + (a.nb?.rent || 0)),
   }[sortBy];
   return list.sort(by);
 }
@@ -395,7 +396,10 @@ function renderCard(s) {
   const plans = Object.entries(s.plan_links || {}).map(([b, urls]) => urls.slice(0, 2).map((u, i) => `<a href="${esc(u)}" target="_blank" rel="noopener">${b} BHK plan${urls.length > 1 ? ' ' + (i + 1) : ''}</a>`).join(' ')).join(' ');
   const issue = `${REPO}/issues/new?title=${encodeURIComponent('Research: ' + s.name)}&body=${encodeURIComponent(`Please verify room sizes and amenities for ${s.name} (${s.locality || ''}).\n\nPortal page: ${s.url}\n${s.brochure_url ? 'Brochure: ' + s.brochure_url : ''}`)}`;
   const facts2 = [s.towers && `${s.towers} towers`, s.units && `${Number(s.units).toLocaleString()} units`, s.acres && `${s.acres} acres`, s.status, s.possession && `possession ${s.possession}`].filter(Boolean).join(' · ');
-  const counts = (s.sale_count || s.rent_count) ? `${(s.sale_count || 0).toLocaleString()} for sale · ${(s.rent_count || 0).toLocaleString()} for rent now` : 'No live listings';
+  const nb = s.nb || {};
+  const counts = [(s.sale_count || s.rent_count) ? `${(s.sale_count || 0).toLocaleString()} for sale · ${(s.rent_count || 0).toLocaleString()} for rent on Magicbricks` : '',
+    (nb.sale || nb.rent) ? `${nb.sale || 0} for sale · ${nb.rent || 0} for rent on NoBroker` : ''].filter(Boolean).join(' · ') || 'No live listings';
+  const nbLinks = nb.links?.length ? `<div class="fine">NoBroker listings (included in the medians above): ${nb.links.map((l) => `<a href="${esc(l.url)}" target="_blank" rel="noopener">${l.bhk} BHK ${formatINR(l.price)}${l.deal === 'rent' ? '/mo' : ''}</a>`).join(' · ')}</div>` : '';
   const parts = s.score_parts || {};
   const score = s.score != null ? `<div class="score"><div class="big">${s.score}<small>/10</small></div><div class="parts">
       ${parts.residents != null ? `<span>Residents <b>${parts.residents}</b></span>` : '<span class="fine">No resident ratings yet</span>'}<span>Nearby <b>${parts.nearby}</b></span><span>Amenities <b>${parts.amenities}</b></span>
@@ -423,6 +427,7 @@ function renderCard(s) {
     ${s.note ? `<div class="fine">${esc(s.note)}</div>` : ''}
     <h4>Buy and rent</h4>
     ${priceRows ? `<table class="prices"><tr><th>Home</th><th>Buy</th><th>Rent</th></tr>${priceRows}</table>` : '<div class="fine">No price data.</div>'}
+    ${nbLinks}
     ${trend}
     <h4>Bedrooms</h4>
     ${unitRows ? `<table><tr><th>Unit</th><th>Bedrooms</th><th></th><th>Source</th></tr>${unitRows}</table>` : '<div class="fine">No unit types listed.</div>'}

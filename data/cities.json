@@ -75,6 +75,11 @@
       "hosur road",
       "wilson garden",
       "neelasandra"
-    ]
+    ],
+    "nobroker": {
+      "city": "bangalore",
+      "localities": ["koramangala", "hsr_layout", "btm_layout", "ejipura", "domlur", "madiwala", "jakkasandra", "adugodi", "wilson_garden"],
+      "max_pages": 30
+    }
   }
 }
