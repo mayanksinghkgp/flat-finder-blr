@@ -63,6 +63,10 @@ def crawl_list():
 
 def crawl_projects():
     index = json.loads((OUT / "mb_index.json").read_text())
+    locs = [l.lower() for l in CFG.get("localities", [])]
+    if locs:  # optional per-city neighbourhood filter (substring match on portal locality)
+        index = [p for p in index if any(l in (p.get("locality") or "").lower() for l in locs)]
+        print("locality filter kept", len(index), "projects", flush=True)
     from concurrent.futures import ThreadPoolExecutor
 
     def one(p):
