@@ -140,10 +140,12 @@ def attach_nobroker(projects, listings, max_m=1500):
     no project is left unmatched rather than given to whatever is closest."""
     grid = Grid(projects, lambda p: (p["lng"], p["lat"]))
     stats = defaultdict(int)
+    leftovers = []
     for l in listings:
         if l["deal"] not in ("rent", "sale") or not l.get("society") or l.get("kind") not in ("flat", "apartment") \
                 or not l.get("bhk") or l.get("bhk_plus") or not l.get("lat") or not l.get("lng"):
             stats["not_a_society_flat"] += 1
+            leftovers.append(l)
             continue
         here, want = (l["lng"], l["lat"]), compact(l["society"])
         best, best_d = None, max_m
@@ -156,6 +158,7 @@ def attach_nobroker(projects, listings, max_m=1500):
                 best, best_d = p, d
         if not best:
             stats["unmatched"] += 1
+            leftovers.append(l)
             continue
         key = "rent_listings" if l["deal"] == "rent" else "sale_listings"
         row = {"bhk": l["bhk"], "price": l["price"], "sqft": l.get("sqft"), "psf": l.get("psf"), "furnished": None, "floor": None,
@@ -169,7 +172,61 @@ def attach_nobroker(projects, listings, max_m=1500):
         if len(nb["links"]) < 8:
             nb["links"].append({"deal": l["deal"], "bhk": l["bhk"], "price": l["price"], "url": l["url"]})
         stats[f"attached_{l['deal']}"] += 1
-    return dict(stats)
+    return dict(stats), leftovers
+
+
+def nobroker_buildings(listings, cfg):
+    """Map entries for NoBroker listings that belong to no Magicbricks society: independent houses ("house") and
+    flats in standalone or unlisted buildings ("standalone"). One entry per building (same point and name).
+    Prices are that building's own listings only; nothing is estimated. Leases and RKs are left out
+    (a lease is a lump sum, an RK has no bedroom count)."""
+    s0, w0, n0, e0 = cfg["bbox"]
+    groups = {}
+    point = lambda l: (round(l["lat"], 5), round(l["lng"], 5))
+    # NoBroker puts listings without an exact address on the locality's centre: a point shared by 3+ listings is approximate
+    shared = defaultdict(int)
+    for l in listings:
+        if l.get("lat") and l.get("lng"):
+            shared[point(l)] += 1
+    for l in listings:
+        if l["deal"] not in ("rent", "sale") or not l.get("bhk") or not l.get("lat") or not l.get("lng") \
+                or not (s0 < l["lat"] < n0 and w0 < l["lng"] < e0):
+            continue
+        kind = "house" if l.get("kind") in ("house", "independent house", "villa") else "standalone"
+        # only listings naming the same building are grouped; nameless ones may be different homes sharing a point
+        key = (*point(l), kind, (l.get("society") or "").lower() or l["id"])
+        groups.setdefault(key, []).append(l)
+    out = []
+    for (lat, lng, kind, _), ls in groups.items():
+        first = ls[0]
+        loc = (first.get("locality") or first.get("searched") or "").replace("_", " ").title() or None
+        name = first.get("society") or ("Independent house" if kind == "house" else "Flat in a standalone building")
+        p = {"rent_listings": [], "sale_listings": []}
+        units = {}
+        for l in ls:
+            p["rent_listings" if l["deal"] == "rent" else "sale_listings"].append(
+                {"bhk": l["bhk"], "price": l["price"], "sqft": l.get("sqft"), "psf": l.get("psf"), "posted": l.get("posted"),
+                 "source": "nobroker", "url": l["url"]})
+            u = units.setdefault(l["bhk"], {"label": f"{l['bhk']}{'+' if l.get('bhk_plus') else ''} BHK" + (f" {int(l['sqft']):,} sq ft" if l.get("sqft") else ""),
+                                            "bhk": l["bhk"], "size_sqft": l.get("sqft"), "bedrooms": [], "rooms_complete": False,
+                                            "confidence": "portal", "source": l["url"], "page": None})
+            if l.get("sqft") and not u["size_sqft"]:
+                u["size_sqft"] = l["sqft"]
+        sale, rent = len(p["sale_listings"]), len(p["rent_listings"])
+        out.append({
+            "id": "nb" + first["id"][:12], "name": name, "developer": None, "locality": loc, "lat": lat, "lng": lng,
+            "status": None, "possession": None, "rera_id": None, "units": None, "towers": 1, "acres": 0.05,
+            "price_min": None, "price_max": None, "kind": kind, "kind_inferred": False, "source": "nobroker",
+            "approx_location": shared[(lat, lng)] >= 3,
+            "config_text": ("Independent house" if kind == "house" else "Flat, building not on Magicbricks") + " · listed on NoBroker",
+            "amenities": [], "amen_facts": {}, "unit_types": list(units.values()), "url": first["url"], "brochure_url": None,
+            "plan_links": {}, "verified": False, "note": None, "images": [], "rating": None, "rating_count": None,
+            "review_count": None, "ratings": {}, "reviews": [], "locality_rating": None, "sale_count": None, "rent_count": None,
+            "psf_now": None, "trend": [], "description": None,
+            "gmaps": f"https://www.google.com/maps/search/?api=1&query={lat},{lng}",
+            "prices": pricing.listing_stats(p),
+            "nb": {"rent": rent, "sale": sale, "links": [{"deal": l["deal"], "bhk": l["bhk"], "price": l["price"], "url": l["url"]} for l in ls[:8]]}})
+    return out
 
 
 def portal_units(p):
@@ -276,9 +333,10 @@ def main(city="gurgaon"):
     not_located = len(raw) - len(located)
     projects = dedupe(located)
     nb_file = out / "nb_listings.json"
-    nb_stats = attach_nobroker(projects, json.loads(nb_file.read_text(encoding="utf-8"))) if nb_file.exists() else {}
+    nb_stats, nb_left = attach_nobroker(projects, json.loads(nb_file.read_text(encoding="utf-8"))) if nb_file.exists() else ({}, [])
+    nb_extra = nobroker_buildings(nb_left, cfg)
     if nb_stats:
-        print("NoBroker listings:", nb_stats)
+        print("NoBroker listings:", nb_stats, "| own map entries:", {k: sum(1 for s in nb_extra if s["kind"] == k) for k in ("house", "standalone")})
     areas =json.loads((out / "osm_areas.geojson").read_text())["features"]
     area_grid = Grid(areas, lambda a: geo.centroid(a["geometry"]["coordinates"][0]))
     blds = json.loads((out / "osm_buildings.geojson").read_text())["features"]
@@ -309,6 +367,7 @@ def main(city="gurgaon"):
             s["towers"] = None
         p["_s"] = s
         societies.append(s)
+    societies.extend(nb_extra)
 
     taken = set()
     for v in ver:
@@ -453,7 +512,7 @@ def main(city="gurgaon"):
         s["score_parts"] = parts
 
     # prices: real listing medians first, then labelled estimates
-    model = pricing.fit_yields(societies)
+    model = pricing.fit_yields([s for s in societies if s.get("source") != "nobroker"])  # yields from societies, as before
     print("price cells flagged as likely typos:", pricing.flag_outliers(societies))
     loc_psf = defaultdict(list)
     for s in societies:
@@ -473,7 +532,7 @@ def main(city="gurgaon"):
         s["prices"] = {str(b): v for b, v in sorted(s["prices"].items())}
 
     for i, s in enumerate(societies):
-        area = match_area(s, area_grid)
+        area = None if s.get("source") == "nobroker" else match_area(s, area_grid)  # one building: never claim a society boundary
         if area and area["properties"]["osm"] in used_areas:
             area = None  # another society already owns this boundary
         if area:
@@ -493,7 +552,9 @@ def main(city="gurgaon"):
                        "for_sale": sum(s["sale_count"] or 0 for s in societies), "for_rent": sum(s["rent_count"] or 0 for s in societies),
                        "verified": sum(s["verified"] for s in societies),
                        "nb_sale": nb_stats.get("attached_sale", 0), "nb_rent": nb_stats.get("attached_rent", 0),
-                       "nb_unmatched": nb_stats.get("unmatched", 0)},
+                       "nb_unmatched": nb_stats.get("unmatched", 0),
+                       "nb_buildings": len(nb_extra), "nb_building_sale": sum(s["nb"]["sale"] for s in nb_extra),
+                       "nb_building_rent": sum(s["nb"]["rent"] for s in nb_extra)},
             "sources": ["Magicbricks project pages"] + (["NoBroker public search pages"] if nb_stats else []) + [ "OpenStreetMap contributors", "HRERA Gurugram", "Builder brochures (verified rows)"],
             "societies": societies, "events": events}
     details = {}

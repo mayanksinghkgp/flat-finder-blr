@@ -3,7 +3,7 @@
 export const RANK = { match: 4, likely: 3, probable: 2, unknown: 1, no: 0 };
 
 export const DEFAULT_CRITERIA = {
-  kinds: ['apartment'],
+  kinds: ['apartment', 'standalone', 'house'], // the last two exist only where NoBroker listings were added
   bhk: [],          // empty = any
   room: null,       // { a, b } in feet, orientation-free
   roomArea: null,   // sq ft: every bedroom at least this big (used instead of room when set)

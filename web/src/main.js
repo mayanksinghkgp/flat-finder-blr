@@ -20,6 +20,9 @@ const KINDS = [
   ['builder floor', 'Builder floors', '<path d="M4 21V8l8-5 8 5v13M4 13h16M4 17h16"/>'],
   ['villa', 'Villas', '<path d="M3 11l9-7 9 7M5 9.5V20h14V9.5M10 20v-5h4v5"/>'],
   ['plot', 'Plots', '<path d="M4 6l8-3 8 3v12l-8 3-8-3zM12 3v18M4 6l16 12"/>'],
+  // NoBroker listings outside any Magicbricks society: shown only in cities that have them
+  ['standalone', 'Standalone flats', '<path d="M7 21V5h10v16M10 8h1M13 8h1M10 12h1M13 12h1M10 16h1M13 16h1"/>', true],
+  ['house', 'Independent houses', '<path d="M4 11l8-6 8 6M6 9.5V20h12V9.5M10 20v-4h4v4"/>', true],
 ];
 const AMEN_LABELS = { squash: 'Squash', pool: 'Pool', gym: 'Gym', club: 'Clubhouse', tennis: 'Tennis', badminton: 'Badminton', jogging: 'Jogging track', kids: 'Kids play' };
 const DIVY = { // Divy's own Gurugram search, shown as the example
@@ -53,7 +56,8 @@ async function boot() {
 
   myList = params.get('list') ? params.get('list').split(',').filter((id) => byId.has(id)) : store.get(`ff-list-${cityId}`, []).filter((id) => byId.has(id));
   const c = city.counts, m = city.price_model || {}, rated = city.societies.filter((s) => s.rating).length;
-  const nbNote = (c.nb_sale || c.nb_rent) ? ` · ${(c.nb_sale || 0).toLocaleString()} for sale, ${(c.nb_rent || 0).toLocaleString()} for rent on NoBroker` : '';
+  const nbSale = (c.nb_sale || 0) + (c.nb_building_sale || 0), nbRent = (c.nb_rent || 0) + (c.nb_building_rent || 0);
+  const nbNote = (nbSale || nbRent) ? ` · ${nbSale.toLocaleString()} for sale, ${nbRent.toLocaleString()} for rent on NoBroker${c.nb_buildings ? ` (${c.nb_buildings.toLocaleString()} standalone flats and houses)` : ''}` : '';
   $('note').textContent = `${c.on_map.toLocaleString()} societies · ${(c.for_sale || 0).toLocaleString()} homes for sale, ${(c.for_rent || 0).toLocaleString()} for rent on Magicbricks${nbNote} · ${c.verified} verified from brochures and HRERA plans`;
   $('about-prices').innerHTML = `Prices and rents are medians of live Magicbricks listings${(c.nb_sale || c.nb_rent) ? ' and NoBroker listings in the same society (matched by society name; independent houses and leases are left out)' : ''}. <b>⚠</b> marks a listing price our checks think is a typo (far from the same home nearby, or rent and price that cannot both be right): it is shown as listed but not used for filters. <b>~</b> marks our estimate: rent is about ${((m.city_yield || 0.025) * 100).toFixed(1)}% of the price per year here (measured on ${m.pairs || 0} society and BHK pairs, correlation ${m.log_price_rent_correlation ?? 'n/a'}). "Probably fits" uses a cautious bedroom size estimated from unit size (${city.room_model?.n || 0} verified unit types). Resident ratings exist for ${rated.toLocaleString()} societies.`;
   $('dl-all').href = `/data/${cityId}-societies.csv`;
@@ -188,7 +192,7 @@ function buildFilters() {
     labels(); applyFilters();
   } });
   redrawFilters = () => {
-    $('f-kind').replaceChildren(...KINDS.map(([k, l, icon]) => chip(`<svg viewBox="0 0 24 24">${icon}</svg><span>${l}</span>`, crit.kinds.includes(k), () => { toggle(crit.kinds, k); redrawFilters(); applyFilters(); }, 'tile')));
+    $('f-kind').replaceChildren(...KINDS.filter(([k, , , optional]) => !optional || data.societies.some((s) => s.kind === k)).map(([k, l, icon]) => chip(`<svg viewBox="0 0 24 24">${icon}</svg><span>${l}</span>`, crit.kinds.includes(k), () => { toggle(crit.kinds, k); redrawFilters(); applyFilters(); }, 'tile')));
     $('f-bhk').replaceChildren(...[1, 2, 3, 4, 5].map((n) => chip(n === 5 ? '5+' : String(n), crit.bhk.includes(n), () => {
       toggle(crit.bhk, n); if (n === 5) toggle(crit.bhk, 6); redrawFilters(); applyFilters(); })));
     const custom = crit.amenities.filter((k) => k.startsWith('n:'));
@@ -399,7 +403,7 @@ function renderCard(s) {
   const nb = s.nb || {};
   const counts = [(s.sale_count || s.rent_count) ? `${(s.sale_count || 0).toLocaleString()} for sale · ${(s.rent_count || 0).toLocaleString()} for rent on Magicbricks` : '',
     (nb.sale || nb.rent) ? `${nb.sale || 0} for sale · ${nb.rent || 0} for rent on NoBroker` : ''].filter(Boolean).join(' · ') || 'No live listings';
-  const nbLinks = nb.links?.length ? `<div class="fine">NoBroker listings (included in the medians above): ${nb.links.map((l) => `<a href="${esc(l.url)}" target="_blank" rel="noopener">${l.bhk} BHK ${formatINR(l.price)}${l.deal === 'rent' ? '/mo' : ''}</a>`).join(' · ')}</div>` : '';
+  const nbLinks = nb.links?.length ? `<div class="fine">${s.source === 'nobroker' ? 'Listings in this building on NoBroker' : 'NoBroker listings (included in the medians above)'}:${nb.links.map((l) => `<a href="${esc(l.url)}" target="_blank" rel="noopener">${l.bhk} BHK ${formatINR(l.price)}${l.deal === 'rent' ? '/mo' : ''}</a>`).join(' · ')}</div>` : '';
   const parts = s.score_parts || {};
   const score = s.score != null ? `<div class="score"><div class="big">${s.score}<small>/10</small></div><div class="parts">
       ${parts.residents != null ? `<span>Residents <b>${parts.residents}</b></span>` : '<span class="fine">No resident ratings yet</span>'}<span>Nearby <b>${parts.nearby}</b></span><span>Amenities <b>${parts.amenities}</b></span>
@@ -425,6 +429,7 @@ function renderCard(s) {
     ${score}
     <div class="meta">${s.rating ? `<span class="stars">★ ${s.rating.toFixed(1)}</span> ${s.rating_count || 0} resident ratings · ${s.review_count || 0} reviews · ` : ''}${counts}</div>
     ${s.note ? `<div class="fine">${esc(s.note)}</div>` : ''}
+    ${s.approx_location ? '<div class="fine">⚠ Approximate location: NoBroker gives only the locality for this listing, so it sits on the locality centre with others.</div>' : ''}
     <h4>Buy and rent</h4>
     ${priceRows ? `<table class="prices"><tr><th>Home</th><th>Buy</th><th>Rent</th></tr>${priceRows}</table>` : '<div class="fine">No price data.</div>'}
     ${nbLinks}
@@ -438,10 +443,10 @@ function renderCard(s) {
     <div class="links">
       <a class="btnlink" href="${esc(s.gmaps)}" target="_blank" rel="noopener">Google Maps and reviews</a>
       <a class="btnlink" href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}" target="_blank" rel="noopener">Directions</a>
-      <a href="${esc(s.url)}" target="_blank" rel="noopener">Magicbricks page</a>
+      <a href="${esc(s.url)}" target="_blank" rel="noopener">${s.source === 'nobroker' ? 'NoBroker listing' : 'Magicbricks page'}</a>
       ${s.brochure_url ? `<a href="${esc(s.brochure_url)}" target="_blank" rel="noopener">Brochure</a>` : ''}
       ${plans}
-      ${!s.verified ? `<a href="${esc(issue)}" target="_blank" rel="noopener">Request a room check →</a>` : ''}
+      ${!s.verified && s.source !== 'nobroker' ? `<a href="${esc(issue)}" target="_blank" rel="noopener">Request a room check →</a>` : ''}
     </div>
     <div class="fine">${s.rera_id ? 'RERA ' + esc(s.rera_id) + ' · ' : ''}${s.shape === 'osm' ? 'Buildings from OpenStreetMap' : s.shape === 'osm-site' ? 'Boundary from OpenStreetMap, towers drawn approximately' : 'Approximate shape: towers drawn from the listed tower count'}</div>`;
   $('card').hidden = false;

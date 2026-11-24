@@ -81,7 +81,39 @@ def test_attach_nobroker_by_name_only():
         {**base, "deal": "sale", "bhk": 4, "bhk_plus": True, "price": 6e7, "society": "Sobha Infinia", "lng": 77.6250, "lat": 12.9250},
         {**base, "deal": "rent", "bhk": 3, "price": 80000, "society": "Sobha Infinia", "lng": 77.70, "lat": 12.99},  # same name, ~10 km away
     ]
-    stats = build_city.attach_nobroker([sobha, kristal], ls)
+    stats, left = build_city.attach_nobroker([sobha, kristal], ls)
+    assert len(left) == 5  # 2 unmatched + 3 not a society flat
     assert stats == {"attached_rent": 1, "duplicate": 1, "attached_sale": 1, "unmatched": 2, "not_a_society_flat": 3}
     assert [l["price"] for l in sobha["rent_listings"]] == [90000, 95000] and sobha["rent_listings"][1]["source"] == "nobroker"
     assert kristal["nb"] == {"rent": 0, "sale": 1, "links": [{"deal": "sale", "bhk": 2, "price": 1.4e7, "url": "u"}]}
+
+
+def test_nobroker_buildings_group_by_building_and_skip_leases():
+    cfg = {"bbox": [12.90, 77.58, 12.97, 77.66]}
+    base = {"sqft": None, "psf": None, "bhk_plus": False, "locality": "Koramangala"}
+    ls = [
+        {**base, "id": "a" * 32, "deal": "rent", "bhk": 2, "price": 30000, "kind": "house", "society": None, "lat": 12.93, "lng": 77.62, "url": "u1"},
+        {**base, "id": "b" * 32, "deal": "rent", "bhk": 3, "price": 45000, "kind": "house", "society": None, "lat": 12.93, "lng": 77.62, "url": "u2"},
+        {**base, "id": "c" * 32, "deal": "sale", "bhk": 2, "price": 9e6, "sqft": 1000, "psf": 9000, "kind": "flat", "society": "Kaveri Nest", "lat": 12.94, "lng": 77.63, "url": "u3"},
+        {**base, "id": "d" * 32, "deal": "lease", "bhk": 2, "price": 9e5, "kind": "flat", "society": None, "lat": 12.94, "lng": 77.61, "url": "u4"},
+        {**base, "id": "e" * 32, "deal": "rent", "bhk": None, "price": 9000, "kind": "flat", "society": None, "lat": 12.94, "lng": 77.61, "url": "u5"},
+        {**base, "id": "f" * 32, "deal": "rent", "bhk": 2, "price": 20000, "kind": "flat", "society": None, "lat": 13.10, "lng": 77.61, "url": "u6"},  # outside bbox
+    ]
+    ls.append({**base, "id": "g" * 32, "deal": "rent", "bhk": 2, "price": 32000, "kind": "flat", "society": "Kaveri Nest", "lat": 12.94, "lng": 77.63, "url": "u7"})
+    out = build_city.nobroker_buildings(ls, cfg)
+    houses = [s for s in out if s["kind"] == "house"]
+    assert len(houses) == 2  # nameless houses on one point stay separate homes
+    assert all(h["name"] == "Independent house" and h["nb"]["rent"] == 1 and not h["approx_location"] for h in houses)
+    assert houses[1]["prices"][3]["rent"]["median"] == 45000 and "rent_est" not in houses[1]["prices"][3]
+    out = {s["kind"]: s for s in out}
+    f = out["standalone"]
+    assert f["name"] == "Kaveri Nest" and f["prices"][2]["buy"]["median"] == 9e6 and f["unit_types"][0]["size_sqft"] == 1000
+    assert f["nb"] == {"rent": 1, "sale": 1, "links": f["nb"]["links"]} and f["prices"][2]["rent"]["median"] == 32000
+
+
+def test_nobroker_shared_point_is_approximate():
+    cfg = {"bbox": [12.90, 77.58, 12.97, 77.66]}
+    ls = [{"id": c * 32, "deal": "rent", "bhk": 2, "price": 30000, "kind": "house", "society": None, "sqft": None, "psf": None,
+           "lat": 12.93519, "lng": 77.62448, "url": c} for c in "abc"]
+    out = build_city.nobroker_buildings(ls, cfg)
+    assert len(out) == 3 and all(s["approx_location"] for s in out)
